@@ -152,6 +152,7 @@ async function verifySignature(body, signature, secret) {
 - **Idempotency**: Duplicate emails (same message ID + reference + amount) are silently dropped.
 - **Amount handling**: All amounts stored as integer cents to avoid floating-point precision issues.
 - **API authentication**: All API endpoints require a Bearer token. Rotate `API_KEY` periodically.
+- **Forwarded email trust caveat**: When a user forwards an Interac email to the ingest address instead of configuring Cloudflare Email Routing to deliver it directly, the outer envelope's `From` and `Reply-To` headers belong to the forwarder (not Interac). SPF/DKIM verification will therefore fail, and the transaction is stored as `status=flagged` with `is_forwarded=1`. The parser detects Gmail-style (`---------- Forwarded message ---------`) and Apple Mail-style (`Begin forwarded message:`) wrappers, unwraps the inner content for field extraction, and sets `is_forwarded: true` to signal the weaker trust chain. **Do not auto-process forwarded transactions without manual review** — the embedded Interac content cannot be authenticated with the same confidence as a directly delivered email.
 
 ## Field Reference
 
@@ -160,15 +161,16 @@ async function verifySignature(body, signature, secret) {
 | `messageId` | string | Email Message-ID header |
 | `fromName` | string \| null | Sender's display name parsed from body |
 | `toEmail` | string \| null | Recipient email address |
-| `replyToEmail` | string \| null | Reply-To address (sender's real email) |
+| `replyToEmail` | string \| null | Reply-To address (sender's real email). For forwarded mail this is extracted from the embedded headers inside the forwarded block, not the outer envelope. |
 | `amountCents` | number | Transfer amount in cents (e.g. 15000 = $150.00) |
 | `currency` | string | Always "CAD" |
-| `reference` | string \| null | Interac reference number (e.g. ETR-2024-XK9P2L) |
+| `reference` | string \| null | Interac reference number (e.g. ETR-2024-XK9P2L). Extracted from URL query params first, then labelled text lines. |
 | `isAutoDeposit` | boolean | true if auto-deposited, false if security question pending |
 | `userMessage` | string \| null | Optional message from sender |
 | `language` | "en" \| "fr" \| null | Detected email language |
 | `subject` | string \| null | Email subject line |
 | `bodyRaw` | string \| null | Plain text email body |
-| `senderVerified` | boolean | true if SPF+DKIM passed and domain is allowlisted |
+| `isForwarded` | boolean | true if a forwarded email wrapper was detected. Trust chain is weaker — see Security Notes. |
+| `senderVerified` | boolean | true if SPF+DKIM passed and domain is allowlisted. Always false for forwarded mail. |
 | `status` | string | unmatched \| matched \| pending_deposit \| flagged |
 | `order_id` | string \| null | Linked order ID (set via match endpoint) |

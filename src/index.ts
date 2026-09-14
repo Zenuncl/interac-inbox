@@ -38,6 +38,8 @@ export default {
 
     let status: string;
     if (!senderVerified) {
+      // Forwarded mail: outer envelope is NOT from Interac, so SPF/DKIM fail.
+      // Flag it for manual review rather than silently rejecting or trusting it.
       status = "flagged";
     } else if (!parsed.isAutoDeposit) {
       status = "pending_deposit";
@@ -47,8 +49,8 @@ export default {
 
     const now = Math.floor(Date.now() / 1000);
     await env.DB.prepare(
-      `INSERT INTO transactions (id, message_id, from_name, to_email, reply_to_email, amount_cents, currency, reference, is_auto_deposit, user_message, language, subject, body_raw, sender_verified, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO transactions (id, message_id, from_name, to_email, reply_to_email, amount_cents, currency, reference, is_auto_deposit, user_message, language, subject, body_raw, is_forwarded, sender_verified, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         idKey,
@@ -64,6 +66,7 @@ export default {
         parsed.language,
         parsed.subject,
         parsed.bodyRaw,
+        parsed.isForwarded ? 1 : 0,
         senderVerified ? 1 : 0,
         status,
         now,

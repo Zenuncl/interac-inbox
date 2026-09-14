@@ -1,11 +1,11 @@
-name = "interac-inbox"
+name = "interac"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "interac_inbox"
-database_id = "REPLACE_WITH_YOUR_D1_ID"
+database_name = "interac"
+database_id = "8695051f-7c8b-4e58-8cb1-f8469056037d"
 migrations_dir = "migrations"
 
 [vars]

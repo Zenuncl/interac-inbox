@@ -11,6 +11,12 @@ export interface ParsedInteracEmail {
   language: "en" | "fr" | null;
   subject: string | null;
   bodyRaw: string | null;
+  /**
+   * true if the email was detected as a forwarded wrapper rather than a
+   * direct Interac delivery.  Trust chain is weaker for forwarded mail —
+   * SPF/DKIM on the outer envelope does NOT belong to Interac.
+   */
+  isForwarded: boolean;
   senderVerified: boolean;
 }
 
