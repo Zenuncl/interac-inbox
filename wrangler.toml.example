@@ -1,3 +1,4 @@
+# Copy to wrangler.toml and fill in your own values. wrangler.toml is gitignored.
 name = "interac"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
@@ -5,7 +6,7 @@ compatibility_date = "2024-09-23"
 [[d1_databases]]
 binding = "DB"
 database_name = "interac"
-database_id = "8695051f-7c8b-4e58-8cb1-f8469056037d"
+database_id = "00000000-0000-0000-0000-000000000000"  # from `npx wrangler d1 create interac`
 migrations_dir = "migrations"
 
 [vars]

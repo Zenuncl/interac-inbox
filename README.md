@@ -32,7 +32,11 @@ Cloudflare Worker that receives Interac e-Transfer notification emails via Email
 ```bash
 git clone <repo-url> && cd interac-inbox
 npm install
+cp wrangler.toml.example wrangler.toml
 ```
+
+`wrangler.toml` is gitignored (it holds your account-specific IDs); edit your
+local copy and keep `wrangler.toml.example` as the template.
 
 ### 2. Create D1 database
 
@@ -40,7 +44,7 @@ npm install
 npx wrangler d1 create interac
 ```
 
-Copy the `database_id` from the output into `wrangler.toml`.
+Copy the `database_id` from the output into your local `wrangler.toml`.
 
 ### 3. Run migrations
 
