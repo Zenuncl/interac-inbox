@@ -37,16 +37,22 @@ npm install
 ### 2. Create D1 database
 
 ```bash
-npx wrangler d1 create interac_inbox
+npx wrangler d1 create interac
 ```
 
 Copy the `database_id` from the output into `wrangler.toml`.
 
-### 3. Run migration
+### 3. Run migrations
 
 ```bash
-npx wrangler d1 migrations apply interac_inbox
+npm run db:migrate          # local (wrangler dev)
+npm run db:migrate:remote   # production D1
 ```
+
+Migrations live in `migrations/` and are applied in order. Re-run the remote
+command after pulling any new migration file (e.g. `0002_add_is_forwarded.sql`
+adds the `is_forwarded` column — the Worker's INSERT fails on databases that
+haven't applied it).
 
 ### 4. Set secrets
 
@@ -58,12 +64,23 @@ npx wrangler secret put WEBHOOK_SIGNING_KEY
 ### 5. Deploy
 
 ```bash
-npx wrangler deploy
+npm run deploy
 ```
+
+The Worker is named `interac` in `wrangler.toml`, so it is served at
+`https://interac.<account>.workers.dev` (the examples below use that host).
 
 ### 6. Configure Email Routing
 
 In the Cloudflare dashboard under **Email Routing**, add your receiving email address (e.g. `payments@yourdomain.com`) and route it to this Worker.
+
+## Development
+
+```bash
+npm test            # vitest
+npm run typecheck   # tsc --noEmit
+npm run dev         # wrangler dev (local D1, run db:migrate first)
+```
 
 ## API Reference
 
@@ -73,7 +90,7 @@ All endpoints require `Authorization: Bearer <API_KEY>`.
 
 ```bash
 curl -H "Authorization: Bearer $API_KEY" \
-  "https://interac-inbox.<account>.workers.dev/api/transactions?status=unmatched&limit=50"
+  "https://interac.<account>.workers.dev/api/transactions?status=unmatched&limit=50"
 ```
 
 Query params: `reference`, `status`, `from_date`, `to_date`, `limit` (max 200), `offset`.
@@ -82,7 +99,7 @@ Query params: `reference`, `status`, `from_date`, `to_date`, `limit` (max 200), 
 
 ```bash
 curl -H "Authorization: Bearer $API_KEY" \
-  "https://interac-inbox.<account>.workers.dev/api/transactions/<id>"
+  "https://interac.<account>.workers.dev/api/transactions/<id>"
 ```
 
 ### Match transaction to order
@@ -91,14 +108,14 @@ curl -H "Authorization: Bearer $API_KEY" \
 curl -X POST -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"order_id": "ORD-123"}' \
-  "https://interac-inbox.<account>.workers.dev/api/transactions/<id>/match"
+  "https://interac.<account>.workers.dev/api/transactions/<id>/match"
 ```
 
 ### List webhooks
 
 ```bash
 curl -H "Authorization: Bearer $API_KEY" \
-  "https://interac-inbox.<account>.workers.dev/api/webhooks"
+  "https://interac.<account>.workers.dev/api/webhooks"
 ```
 
 ### Register webhook
@@ -107,14 +124,14 @@ curl -H "Authorization: Bearer $API_KEY" \
 curl -X POST -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://your-backend.com/webhook", "description": "Production"}' \
-  "https://interac-inbox.<account>.workers.dev/api/webhooks"
+  "https://interac.<account>.workers.dev/api/webhooks"
 ```
 
 ### Delete webhook
 
 ```bash
 curl -X DELETE -H "Authorization: Bearer $API_KEY" \
-  "https://interac-inbox.<account>.workers.dev/api/webhooks/<id>"
+  "https://interac.<account>.workers.dev/api/webhooks/<id>"
 ```
 
 ## Webhook Verification

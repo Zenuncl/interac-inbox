@@ -7,7 +7,9 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "vitest run",
-    "db:migrate": "wrangler d1 migrations apply interac_inbox"
+    "typecheck": "tsc -p .",
+    "db:migrate": "wrangler d1 migrations apply interac --local",
+    "db:migrate:remote": "wrangler d1 migrations apply interac --remote"
   },
   "dependencies": {
     "postal-mime": "^2.3.2"

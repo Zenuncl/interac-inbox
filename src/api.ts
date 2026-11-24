@@ -54,11 +54,8 @@ async function getTransactions(
   const status = url.searchParams.get("status");
   const fromDate = url.searchParams.get("from_date");
   const toDate = url.searchParams.get("to_date");
-  const limit = Math.min(
-    parseInt(url.searchParams.get("limit") ?? "50", 10) || 50,
-    200,
-  );
-  const offset = parseInt(url.searchParams.get("offset") ?? "0", 10) || 0;
+  const limit = clampInt(url.searchParams.get("limit"), 50, 1, 200);
+  const offset = clampInt(url.searchParams.get("offset"), 0, 0, Number.MAX_SAFE_INTEGER);
 
   const conditions: string[] = [];
   const bindings: unknown[] = [];
@@ -72,12 +69,16 @@ async function getTransactions(
     bindings.push(status);
   }
   if (fromDate) {
+    const ts = parseInt(fromDate, 10);
+    if (Number.isNaN(ts)) return json({ error: "from_date must be a unix timestamp" }, 400);
     conditions.push("created_at >= ?");
-    bindings.push(parseInt(fromDate, 10));
+    bindings.push(ts);
   }
   if (toDate) {
+    const ts = parseInt(toDate, 10);
+    if (Number.isNaN(ts)) return json({ error: "to_date must be a unix timestamp" }, 400);
     conditions.push("created_at <= ?");
-    bindings.push(parseInt(toDate, 10));
+    bindings.push(ts);
   }
 
   const where =
@@ -110,8 +111,8 @@ async function matchTransaction(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  const body = await request.json<{ order_id: string }>();
-  if (!body.order_id) {
+  const body = await readJson<{ order_id?: string }>(request);
+  if (!body || typeof body.order_id !== "string" || !body.order_id) {
     return json({ error: "order_id is required" }, 400);
   }
 
@@ -140,12 +141,15 @@ async function createWebhook(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  const body = await request.json<{
-    url: string;
-    description?: string;
-  }>();
-  if (!body.url) {
+  const body = await readJson<{ url?: string; description?: string }>(request);
+  if (!body || typeof body.url !== "string" || !body.url) {
     return json({ error: "url is required" }, 400);
+  }
+  try {
+    const u = new URL(body.url);
+    if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error();
+  } catch {
+    return json({ error: "url must be a valid http(s) URL" }, 400);
   }
 
   const id = crypto.randomUUID();
@@ -175,6 +179,25 @@ async function deleteWebhook(
     .bind(id)
     .run();
   return new Response(null, { status: 204 });
+}
+
+async function readJson<T>(request: Request): Promise<T | null> {
+  try {
+    return (await request.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+function clampInt(
+  raw: string | null,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const n = parseInt(raw ?? "", 10);
+  if (Number.isNaN(n)) return fallback;
+  return Math.min(Math.max(n, min), max);
 }
 
 function json(data: unknown, status = 200): Response {

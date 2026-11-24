@@ -284,4 +284,67 @@ describe("parseInteracEmail", () => {
       expect(result.replyToEmail).toBe("eve@example.com");
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Regression: is_forwarded field must be present in all parsed results
+  // (missing column caused D1 INSERT exception in production — t_29650f14)
+  // -------------------------------------------------------------------------
+  describe("regression: is_forwarded always present", () => {
+    it("direct email has isForwarded=false", async () => {
+      const result = await parseInteracEmail(
+        toArrayBuffer(FIXTURE_EN_AUTODEPOSIT),
+        "payments@example.com",
+      );
+      expect(result).toHaveProperty("isForwarded");
+      expect(result.isForwarded).toBe(false);
+    });
+
+    it("Gmail-forwarded email has isForwarded=true", async () => {
+      const result = await parseInteracEmail(
+        toArrayBuffer(FIXTURE_GMAIL_FORWARDED),
+        "payments@example.com",
+      );
+      expect(result).toHaveProperty("isForwarded");
+      expect(result.isForwarded).toBe(true);
+    });
+
+    it("Apple-forwarded email has isForwarded=true", async () => {
+      const result = await parseInteracEmail(
+        toArrayBuffer(FIXTURE_APPLE_FORWARDED),
+        "payments@example.com",
+      );
+      expect(result).toHaveProperty("isForwarded");
+      expect(result.isForwarded).toBe(true);
+    });
+
+    it("parsed result keys match D1 INSERT column list", async () => {
+      const result = await parseInteracEmail(
+        toArrayBuffer(FIXTURE_EN_AUTODEPOSIT),
+        "payments@example.com",
+      );
+      // These are exactly the fields referenced in the INSERT in index.ts.
+      // If any field is missing from ParsedInteracEmail the TypeScript build
+      // would already catch it, but this test guards against runtime undefined values
+      // being silently coerced to NULL when the column does not exist in the schema.
+      const requiredFields = [
+        "messageId",
+        "fromName",
+        "toEmail",
+        "replyToEmail",
+        "amountCents",
+        "currency",
+        "reference",
+        "isAutoDeposit",
+        "userMessage",
+        "language",
+        "subject",
+        "bodyRaw",
+        "isForwarded",   // <-- was missing from schema, caused the 5x exception
+        "senderVerified",
+      ];
+      for (const field of requiredFields) {
+        expect(result, `field '${field}' must exist on parsed result`).toHaveProperty(field);
+      }
+    });
+  });
 });
