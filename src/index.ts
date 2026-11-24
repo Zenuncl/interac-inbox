@@ -1,8 +1,8 @@
 import { handleApiRequest } from "./api";
 import { parseInteracEmail } from "./parser";
 import { verifyInteracSender } from "./emailVerifier";
-import { dispatchWebhooks } from "./webhooks";
-import type { Env } from "./types";
+import { dispatchWebhooks, retryFailedWebhooks } from "./webhooks";
+import type { Env, ParsedInteracEmail } from "./types";
 
 export default {
   async email(
@@ -11,13 +11,23 @@ export default {
     ctx: ExecutionContext,
   ) {
     const allowlist = env.INTERAC_DOMAIN_ALLOWLIST.split(",").map((d) =>
-      d.trim(),
+      d.trim().toLowerCase(),
     );
     const senderVerified = verifyInteracSender(message, allowlist);
 
     const rawEmail = await new Response(message.raw).arrayBuffer();
 
-    const parsed = await parseInteracEmail(rawEmail, message.to);
+    let parsed: ParsedInteracEmail;
+    let parseError: string | null = null;
+    try {
+      parsed = await parseInteracEmail(rawEmail, message.to);
+    } catch (err) {
+      // Never drop mail on the floor: record what we got so it can be
+      // reviewed manually instead of bouncing back to Interac.
+      parseError = String(err);
+      console.error("Failed to parse inbound email:", err);
+      parsed = fallbackParsed(message, rawEmail);
+    }
     parsed.senderVerified = senderVerified;
 
     const idKey = await buildIdempotencyKey(
@@ -37,9 +47,10 @@ export default {
     }
 
     let status: string;
-    if (!senderVerified) {
-      // Forwarded mail: outer envelope is NOT from Interac, so SPF/DKIM fail.
-      // Flag it for manual review rather than silently rejecting or trusting it.
+    if (parseError || !senderVerified) {
+      // Unparseable, or forwarded mail: outer envelope is NOT from Interac,
+      // so SPF/DKIM fail. Flag for manual review rather than silently
+      // rejecting or trusting it.
       status = "flagged";
     } else if (!parsed.isAutoDeposit) {
       status = "pending_deposit";
@@ -75,27 +86,75 @@ export default {
       .run();
 
     if (status === "unmatched") {
-      const transactionRow = { id: idKey, ...parsed, status, created_at: now };
-      ctx.waitUntil(
-        dispatchWebhooks(env.DB, transactionRow, env.WEBHOOK_SIGNING_KEY),
-      );
+      ctx.waitUntil(dispatchWebhooks(env.DB, idKey, env.WEBHOOK_SIGNING_KEY));
     }
 
-    console.log(`Processed email: ${idKey} status=${status}`);
+    console.log(
+      `Processed email: ${idKey} status=${status}${parseError ? " (parse error)" : ""}`,
+    );
   },
 
   async fetch(
     request: Request,
     env: Env,
-    _ctx: ExecutionContext,
+    ctx: ExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/")) {
-      return handleApiRequest(request, env);
+      return handleApiRequest(request, env, ctx);
     }
     return new Response("Interac Inbox Worker", { status: 200 });
   },
+
+  async scheduled(
+    _event: ScheduledEvent,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<void> {
+    ctx.waitUntil(
+      retryFailedWebhooks(env.DB, env.WEBHOOK_SIGNING_KEY).then((r) =>
+        console.log(
+          `Webhook retry sweep: scanned=${r.scanned} retried=${r.retried}`,
+        ),
+      ),
+    );
+  },
 };
+
+/**
+ * Minimal record for mail the parser could not handle. Keeps the raw body
+ * so a human can inspect it; amount 0 ensures nothing downstream treats it
+ * as a real payment.
+ */
+function fallbackParsed(
+  message: ForwardableEmailMessage,
+  rawEmail: ArrayBuffer,
+): ParsedInteracEmail {
+  const messageId =
+    message.headers.get("message-id") ?? `unparsed-${crypto.randomUUID()}`;
+  let bodyRaw: string | null = null;
+  try {
+    bodyRaw = new TextDecoder().decode(rawEmail).slice(0, 64 * 1024);
+  } catch {
+    bodyRaw = null;
+  }
+  return {
+    messageId,
+    fromName: message.from,
+    toEmail: message.to,
+    replyToEmail: null,
+    amountCents: 0,
+    currency: "CAD",
+    reference: null,
+    isAutoDeposit: false,
+    userMessage: null,
+    language: null,
+    subject: message.headers.get("subject"),
+    bodyRaw,
+    isForwarded: false,
+    senderVerified: false,
+  };
+}
 
 async function buildIdempotencyKey(
   messageId: string,

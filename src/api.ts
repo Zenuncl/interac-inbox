@@ -1,8 +1,15 @@
 import type { Env } from "./types";
+import { dispatchWebhooks } from "./webhooks";
+
+/** Statuses a human reviewer may promote to `unmatched`. */
+const APPROVABLE_STATUSES = ["flagged", "pending_deposit"];
+/** Statuses a human reviewer may mark as `rejected`. */
+const REJECTABLE_STATUSES = ["flagged", "pending_deposit", "unmatched"];
 
 export async function handleApiRequest(
   request: Request,
   env: Env,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const authHeader = request.headers.get("Authorization");
   if (authHeader !== `Bearer ${env.API_KEY}`) {
@@ -30,8 +37,25 @@ export async function handleApiRequest(
     return matchTransaction(matchRoute[1], request, env);
   }
 
+  const approveRoute = path.match(/^\/api\/transactions\/([^/]+)\/approve$/);
+  if (approveRoute && method === "POST") {
+    return approveTransaction(approveRoute[1], env, ctx);
+  }
+
+  const rejectRoute = path.match(/^\/api\/transactions\/([^/]+)\/reject$/);
+  if (rejectRoute && method === "POST") {
+    return rejectTransaction(rejectRoute[1], env);
+  }
+
+  const deliveriesRoute = path.match(
+    /^\/api\/transactions\/([^/]+)\/deliveries$/,
+  );
+  if (deliveriesRoute && method === "GET") {
+    return getDeliveries(deliveriesRoute[1], env);
+  }
+
   if (method === "GET" && path === "/api/webhooks") {
-    return getWebhooks(env);
+    return getWebhooks(url, env);
   }
 
   if (method === "POST" && path === "/api/webhooks") {
@@ -132,8 +156,101 @@ async function matchTransaction(
   return json(updated);
 }
 
-async function getWebhooks(env: Env): Promise<Response> {
-  const result = await env.DB.prepare("SELECT * FROM webhooks").all();
+/**
+ * Promote a reviewed `flagged` / `pending_deposit` transaction to `unmatched`
+ * and fire webhooks, exactly as if it had arrived verified + auto-deposited.
+ */
+async function approveTransaction(
+  id: string,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const row = await env.DB.prepare(
+    "SELECT id, status FROM transactions WHERE id = ?",
+  )
+    .bind(id)
+    .first<{ id: string; status: string }>();
+  if (!row) return json({ error: "Not Found" }, 404);
+  if (!APPROVABLE_STATUSES.includes(row.status)) {
+    return json(
+      {
+        error: `Cannot approve transaction in status '${row.status}'`,
+        allowed_from: APPROVABLE_STATUSES,
+      },
+      409,
+    );
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    "UPDATE transactions SET status = 'unmatched', updated_at = ? WHERE id = ?",
+  )
+    .bind(now, id)
+    .run();
+
+  ctx.waitUntil(dispatchWebhooks(env.DB, id, env.WEBHOOK_SIGNING_KEY));
+
+  const updated = await env.DB.prepare(
+    "SELECT * FROM transactions WHERE id = ?",
+  )
+    .bind(id)
+    .first();
+  return json(updated);
+}
+
+/** Mark a transaction as rejected so it is excluded from matching. */
+async function rejectTransaction(id: string, env: Env): Promise<Response> {
+  const row = await env.DB.prepare(
+    "SELECT id, status FROM transactions WHERE id = ?",
+  )
+    .bind(id)
+    .first<{ id: string; status: string }>();
+  if (!row) return json({ error: "Not Found" }, 404);
+  if (!REJECTABLE_STATUSES.includes(row.status)) {
+    return json(
+      {
+        error: `Cannot reject transaction in status '${row.status}'`,
+        allowed_from: REJECTABLE_STATUSES,
+      },
+      409,
+    );
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    "UPDATE transactions SET status = 'rejected', updated_at = ? WHERE id = ?",
+  )
+    .bind(now, id)
+    .run();
+
+  const updated = await env.DB.prepare(
+    "SELECT * FROM transactions WHERE id = ?",
+  )
+    .bind(id)
+    .first();
+  return json(updated);
+}
+
+async function getDeliveries(id: string, env: Env): Promise<Response> {
+  const result = await env.DB.prepare(
+    `SELECT d.*, w.url AS webhook_url
+     FROM webhook_deliveries d
+     JOIN webhooks w ON w.id = d.webhook_id
+     WHERE d.transaction_id = ?
+     ORDER BY d.created_at DESC, d.attempt DESC`,
+  )
+    .bind(id)
+    .all();
+  return json(result.results);
+}
+
+async function getWebhooks(url: URL, env: Env): Promise<Response> {
+  const includeInactive = url.searchParams.get("include_inactive") === "1";
+  const result = await env.DB.prepare(
+    includeInactive
+      ? "SELECT * FROM webhooks ORDER BY created_at DESC"
+      : "SELECT * FROM webhooks WHERE active = 1 ORDER BY created_at DESC",
+  ).all();
   return json(result.results);
 }
 
@@ -152,13 +269,35 @@ async function createWebhook(
     return json({ error: "url must be a valid http(s) URL" }, 400);
   }
 
-  const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(
-    "INSERT INTO webhooks (id, url, description, active, created_at) VALUES (?, ?, ?, 1, ?)",
+
+  // url is UNIQUE; a previously deleted (active=0) webhook is reactivated
+  // rather than failing the INSERT.
+  const existing = await env.DB.prepare(
+    "SELECT id, active FROM webhooks WHERE url = ?",
   )
-    .bind(id, body.url, body.description ?? null, now)
-    .run();
+    .bind(body.url)
+    .first<{ id: string; active: number }>();
+
+  let id: string;
+  if (existing) {
+    if (existing.active) {
+      return json({ error: "webhook with this url already exists" }, 409);
+    }
+    id = existing.id;
+    await env.DB.prepare(
+      "UPDATE webhooks SET active = 1, description = COALESCE(?, description), created_at = ? WHERE id = ?",
+    )
+      .bind(body.description ?? null, now, id)
+      .run();
+  } else {
+    id = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO webhooks (id, url, description, active, created_at) VALUES (?, ?, ?, 1, ?)",
+    )
+      .bind(id, body.url, body.description ?? null, now)
+      .run();
+  }
 
   const webhook = await env.DB.prepare(
     "SELECT * FROM webhooks WHERE id = ?",
@@ -166,7 +305,7 @@ async function createWebhook(
     .bind(id)
     .first();
 
-  return json(webhook, 201);
+  return json(webhook, existing ? 200 : 201);
 }
 
 async function deleteWebhook(

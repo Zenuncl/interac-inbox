@@ -111,7 +111,39 @@ curl -X POST -H "Authorization: Bearer $API_KEY" \
   "https://interac.<account>.workers.dev/api/transactions/<id>/match"
 ```
 
+### Approve a reviewed transaction
+
+Promotes a `flagged` or `pending_deposit` transaction to `unmatched` and fires
+webhooks, exactly as if it had arrived verified and auto-deposited. Use this
+after a human has confirmed a forwarded/flagged email is genuine, or once a
+security-question transfer has actually been deposited. Returns `409` for any
+other status.
+
+```bash
+curl -X POST -H "Authorization: Bearer $API_KEY" \
+  "https://interac.<account>.workers.dev/api/transactions/<id>/approve"
+```
+
+### Reject a transaction
+
+Marks a `flagged`, `pending_deposit`, or `unmatched` transaction as `rejected`
+so it is excluded from matching. Returns `409` for any other status.
+
+```bash
+curl -X POST -H "Authorization: Bearer $API_KEY" \
+  "https://interac.<account>.workers.dev/api/transactions/<id>/reject"
+```
+
+### List webhook deliveries for a transaction
+
+```bash
+curl -H "Authorization: Bearer $API_KEY" \
+  "https://interac.<account>.workers.dev/api/transactions/<id>/deliveries"
+```
+
 ### List webhooks
+
+Returns active webhooks only; add `?include_inactive=1` to include deleted ones.
 
 ```bash
 curl -H "Authorization: Bearer $API_KEY" \
@@ -127,6 +159,9 @@ curl -X POST -H "Authorization: Bearer $API_KEY" \
   "https://interac.<account>.workers.dev/api/webhooks"
 ```
 
+URLs are unique. Registering a URL that was previously deleted reactivates it
+(`200`); registering one that is already active returns `409`.
+
 ### Delete webhook
 
 ```bash
@@ -134,7 +169,28 @@ curl -X DELETE -H "Authorization: Bearer $API_KEY" \
   "https://interac.<account>.workers.dev/api/webhooks/<id>"
 ```
 
-## Webhook Verification
+## Webhooks
+
+When a transaction enters `unmatched` (either on ingest or via `/approve`),
+every active webhook receives:
+
+```json
+{
+  "event": "transaction.received",
+  "data": { /* the transaction row, same shape as GET /api/transactions/<id> */ }
+}
+```
+
+Headers: `X-Signature` (see below), `X-Interac-Inbox-Event`,
+`X-Interac-Inbox-Attempt`.
+
+A delivery is successful on any 2xx response. Failures (non-2xx or network
+error) are recorded in `webhook_deliveries` and retried by a Cron Trigger
+(`*/5 * * * *` in `wrangler.toml`) with backoff of 1m, 5m, 30m, 2h — up to 5
+attempts total. Deliveries are at-least-once; make your receiver idempotent on
+`data.id`.
+
+### Verification
 
 Each webhook POST includes an `X-Signature` header containing an HMAC-SHA256 hex digest of the request body, signed with your `WEBHOOK_SIGNING_KEY`.
 
@@ -163,8 +219,9 @@ async function verifySignature(body, signature, secret) {
 
 ## Security Notes
 
-- **SPF + DKIM validation**: Emails failing either check are stored with `status=flagged` and `sender_verified=0`. Never auto-process flagged transactions.
-- **Domain allowlist**: Only emails from `payments.interac.ca`, `interac.ca`, and `notifications.interac.ca` pass verification. Adjust `INTERAC_DOMAIN_ALLOWLIST` if Interac adds new sending domains.
+- **Sender authentication**: Cloudflare Email Routing prepends an `Authentication-Results` header; only the `mx.cloudflare.net` segment is trusted. A message is `sender_verified=1` when its domain is allowlisted **and** either `dmarc=pass`, or `spf=pass` plus a `dkim=pass` whose `header.d` is allowlisted. Anything else is stored with `status=flagged` and `sender_verified=0`. Never auto-process flagged transactions.
+- **Domain allowlist**: The `From:` header domain **or** the SMTP envelope sender must be `payments.interac.ca`, `interac.ca`, `notifications.interac.ca`, or a subdomain of one. Interac documents `notify@payments.interac.ca` / `catch@payments.interac.ca` as its sender addresses. Adjust `INTERAC_DOMAIN_ALLOWLIST` if Interac adds new sending domains.
+- **Unparseable mail**: If the MIME parser throws, the message is still stored (`status=flagged`, `amount_cents=0`, raw body in `body_raw`) so nothing is lost; review it via the API.
 - **Security-question emails**: Emails without auto-deposit language are stored as `pending_deposit`. These require the recipient to manually accept the transfer — do not fulfill orders based on these.
 - **Idempotency**: Duplicate emails (same message ID + reference + amount) are silently dropped.
 - **Amount handling**: All amounts stored as integer cents to avoid floating-point precision issues.
@@ -189,5 +246,5 @@ async function verifySignature(body, signature, secret) {
 | `bodyRaw` | string \| null | Plain text email body |
 | `isForwarded` | boolean | true if a forwarded email wrapper was detected. Trust chain is weaker — see Security Notes. |
 | `senderVerified` | boolean | true if SPF+DKIM passed and domain is allowlisted. Always false for forwarded mail. |
-| `status` | string | unmatched \| matched \| pending_deposit \| flagged |
+| `status` | string | unmatched \| matched \| pending_deposit \| flagged \| rejected |
 | `order_id` | string \| null | Linked order ID (set via match endpoint) |

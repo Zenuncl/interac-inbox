@@ -14,3 +14,7 @@ INTERAC_DOMAIN_ALLOWLIST = "payments.interac.ca,interac.ca,notifications.interac
 # Secrets (set via `npx wrangler secret put <NAME>`):
 # API_KEY
 # WEBHOOK_SIGNING_KEY
+
+# Retry failed webhook deliveries (see src/webhooks.ts retryFailedWebhooks)
+[triggers]
+crons = ["*/5 * * * *"]
